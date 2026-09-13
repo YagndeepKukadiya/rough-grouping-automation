@@ -17,6 +17,26 @@ st.set_page_config(
 # ------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------
+# Current behavior
+GROUPING_MODE = "R N"
+
+# Future options:
+# GROUPING_MODE = "R N Part"
+
+def get_group_key(rn):
+
+    if GROUPING_MODE == "R N":
+        return str(rn)
+
+    elif GROUPING_MODE == "R N Part":
+        match = re.match(r"^([A-Za-z]+)", str(rn))
+
+        if match:
+            return match.group(1)
+
+        return str(rn)
+
+    return str(rn)
 
 def validate_main_file(df):
     required_columns = ["Date", "R N", "R D"]
@@ -96,7 +116,6 @@ def autofit_columns(ws):
 
 
 def format_workbook(workbook):
-
     bold_font = Font(bold=True)
 
     thin_border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
@@ -191,9 +210,7 @@ def generate_output(main_file, main_df, keywords):
             break
 
     if source_ws is None:
-        raise ValueError(
-            "Could not find a worksheet containing Date, R N and R D columns."
-        )
+        raise ValueError("Could not find a worksheet containing Date, R N and R D columns.")
     
     matched_indexes = set()
     for keyword in keywords:
@@ -218,14 +235,16 @@ def generate_output(main_file, main_df, keywords):
 
         current_row = 1
 
-        grouped_units = []
+        grouped_rns = []
 
-        for unit, group in matched.groupby("R N"):
+        matched["Group_Key"] = (matched["R N"].apply(get_group_key))
+        
+        for group_key, group in matched.groupby("Group_Key"):
             group = group.sort_values("Date")
-            grouped_units.append(
-                (group["Date"].min(), unit, group))
+            grouped_rns.append(
+                (group["Date"].min(), group_key, group))
 
-        grouped_units.sort(key=lambda x: x[0])
+        grouped_rns.sort(key=lambda x: x[0])
 
         header_mapping = {}
 
@@ -237,7 +256,7 @@ def generate_output(main_file, main_df, keywords):
 
         current_row += 1
 
-        for _, unit, group in grouped_units:
+        for _, group_key, group in grouped_rns:
             if current_row > 2:
                 for col_num in range(1, source_ws.max_column + 1):
                     source_cell = source_ws.cell(row=1, column=col_num)
@@ -303,14 +322,16 @@ def generate_output(main_file, main_df, keywords):
 
     return output
 
+
 @st.cache_data
 def get_base64_image(image_path):
     with open(image_path, "rb") as img:
         return base64.b64encode(img.read()).decode()
-
+    
 # ------------------------------------------------------
 # Streamlit UI
 # ------------------------------------------------------
+
 bg_image = get_base64_image("Mine.webp")
 
 st.markdown(
