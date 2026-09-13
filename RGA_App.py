@@ -6,7 +6,7 @@ from copy import copy
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-
+import base64
 
 st.set_page_config(
     page_title="Rough Grouping Automation",
@@ -304,9 +304,37 @@ def generate_output(main_file, main_df, keywords):
     return output
 
 
+def get_base64_image(image_path):
+    with open(image_path, "rb") as img:
+        return base64.b64encode(img.read()).decode()
+
 # ------------------------------------------------------
 # Streamlit UI
 # ------------------------------------------------------
+bg_image = get_base64_image("Mine.jpeg")
+
+st.markdown(
+    f"""
+    <style>
+
+    .stApp {{
+        background:
+            linear-gradient(
+                135deg,
+                rgba(0,0,0,0.90),
+                rgba(0,0,0,0.85)
+            ),
+            url("data:image/jpeg;base64,{bg_image}");
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }}
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.markdown("""
 <style>
 
