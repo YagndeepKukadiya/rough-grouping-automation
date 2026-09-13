@@ -303,7 +303,7 @@ def generate_output(main_file, main_df, keywords):
 
     return output
 
-
+@st.cache_data
 def get_base64_image(image_path):
     with open(image_path, "rb") as img:
         return base64.b64encode(img.read()).decode()
@@ -311,7 +311,7 @@ def get_base64_image(image_path):
 # ------------------------------------------------------
 # Streamlit UI
 # ------------------------------------------------------
-bg_image = get_base64_image("Mine.jpeg")
+bg_image = get_base64_image("Mine.webp")
 
 st.markdown(
     f"""
