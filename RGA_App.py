@@ -217,8 +217,10 @@ def generate_output(main_file, main_df, keywords):
     
     matched_indexes = set()
     for keyword in keywords:
-
-        matched = keyword_filter(main_df, keyword)
+        # Only match records NOT already matched by a previous keyword
+        unmatched_df = main_df.loc[~main_df.index.isin(matched_indexes)]
+    
+        matched = keyword_filter(unmatched_df, keyword)
 
         matched_indexes.update(matched.index.tolist())
 
