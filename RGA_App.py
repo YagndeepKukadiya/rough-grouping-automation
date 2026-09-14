@@ -413,7 +413,7 @@ st.markdown("""
     font-size: 18px;
     font-weight: 600;
     margin-bottom: 10px;
-    color: #111827;
+    color: white;
 }
 
 /* Download button */
