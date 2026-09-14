@@ -18,10 +18,10 @@ st.set_page_config(
 # Helper Functions
 # ------------------------------------------------------
 # Current behavior
-GROUPING_MODE = "R N"
+# GROUPING_MODE = "R N"
 
 # Future options:
-# GROUPING_MODE = "R N Part"
+GROUPING_MODE = "R N Part"
 
 def get_group_key(rn):
 
@@ -469,9 +469,12 @@ if main_file and keyword_file:
     try:
         with st.spinner("Reading files..."):
             main_df = pd.read_excel(main_file)
+            main_df.columns = main_df.columns.str.strip()
+            
             keyword_df = pd.read_excel(keyword_file)
+            keyword_df.columns = keyword_df.columns.str.strip()
+            
             main_df = validate_main_file(main_df)
-
             keywords = validate_keyword_file(keyword_df)
 
         st.success(f"Validation completed successfully • {len(keywords)} keyword(s) found")
