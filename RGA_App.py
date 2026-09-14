@@ -93,13 +93,21 @@ def validate_keyword_file(df):
     return keywords
 
 
+#def keyword_filter(df, keyword):
+#    escaped = re.escape(keyword)
+#    # Remove trailing \b if keyword ends with punctuation
+#    if escaped and escaped[-1] in r'\.!?;:,':
+#        pattern = rf"\b{escaped}"
+#    else:
+#        pattern = rf"\b{escaped}\b"
+#    return df[df["R D"].astype(str).str.contains(pattern, regex=True, case=False, na=False)].copy()
+
 def keyword_filter(df, keyword):
     escaped = re.escape(keyword)
-    # Remove trailing \b if keyword ends with punctuation
-    if escaped and escaped[-1] in r'\.!?;:,':
-        pattern = rf"\b{escaped}"
-    else:
-        pattern = rf"\b{escaped}\b"
+    # Match keyword ONLY when it's standalone (surrounded by whitespace or string boundaries)
+    # NOT preceded or followed by ANY character (including non-word characters like /, -, etc.)
+    pattern = rf"(?:^|\s){escaped}(?:\s|$)"
+    
     return df[df["R D"].astype(str).str.contains(pattern, regex=True, case=False, na=False)].copy()
 
 def autofit_columns(ws):
