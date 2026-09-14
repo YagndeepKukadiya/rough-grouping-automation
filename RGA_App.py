@@ -355,8 +355,8 @@ st.markdown(
         background:
             linear-gradient(
                 135deg,
-                rgba(0,0,0,0.90),
-                rgba(0,0,0,0.85)
+                rgba(0,0,0,0.80),
+                rgba(0,0,0,0.75)
             ),
             url("data:image/jpeg;base64,{bg_image}");
         background-size: cover;
