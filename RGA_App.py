@@ -4,47 +4,37 @@ import re
 from io import BytesIO
 from copy import copy
 from openpyxl import load_workbook
-from openpyxl.styles import Font, Border, Side, Alignment
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill, Font, Border, Side, Font
+from openpyxl.utils import get_column_letter, column_index_from_string
+from openpyxl.formula.translate import Translator
 import base64
 
 st.set_page_config(
     page_title="Rough Grouping Automation",
-    page_icon="📊",
+    page_icon="RGA_App_Icon.ico",
     layout="wide"
 )
 
 # ------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------
-# Current behavior
-# GROUPING_MODE = "R N"
-
-# Future options:
-GROUPING_MODE = "R N Part"
-
 def get_group_key(rn):
+    match = re.match(r"^([A-Za-z]+)", str(rn))
 
-    if GROUPING_MODE == "R N":
-        return str(rn)
-
-    elif GROUPING_MODE == "R N Part":
-        match = re.match(r"^([A-Za-z]+)", str(rn))
-
-        if match:
-            return match.group(1)
-
-        return str(rn)
+    if match:
+        return match.group(1)
 
     return str(rn)
 
 def validate_main_file(df):
-    required_columns = ["Date", "R N", "R D"]
+    required_columns = ['Date', 'R N', 'R D', 'PC', 'Ct.', 'R1', 'R2', 'P. PC', 'P.Ct.', 'PS', 'P1', 'P2']
 
-    missing = [
-        col for col in required_columns
-        if col not in df.columns
-    ]
+    # Convert both to uppercase for a perfect, case-insensitive match
+    uploaded_cols_upper = {str(col).upper() for col in df.columns}
+
+    # Find missing columns by stripping and lowercasing the required list too
+    missing = [req_col for req_col in required_columns
+               if str(req_col).strip().upper() not in uploaded_cols_upper]
 
     if missing:
         raise ValueError(f"Main Data file is missing required column(s): {', '.join(missing)}")
@@ -79,7 +69,7 @@ def validate_main_file(df):
 
 def validate_keyword_file(df):
     if "Keyword" not in df.columns:
-        raise ValueError("Keyword file must contain a column named 'R D'.")
+        raise ValueError("Keyword file must contain a column named 'Keyword'.")
 
     keywords = (df["Keyword"].dropna().astype(str).str.strip())
 
@@ -93,15 +83,6 @@ def validate_keyword_file(df):
     return keywords
 
 
-#def keyword_filter(df, keyword):
-#    escaped = re.escape(keyword)
-#    # Remove trailing \b if keyword ends with punctuation
-#    if escaped and escaped[-1] in r'\.!?;:,':
-#        pattern = rf"\b{escaped}"
-#    else:
-#        pattern = rf"\b{escaped}\b"
-#    return df[df["R D"].astype(str).str.contains(pattern, regex=True, case=False, na=False)].copy()
-
 def keyword_filter(df, keyword):
     escaped = re.escape(keyword)
     # Match keyword ONLY when it's standalone (surrounded by whitespace or string boundaries)
@@ -110,71 +91,259 @@ def keyword_filter(df, keyword):
     
     return df[df["R D"].astype(str).str.contains(pattern, regex=True, case=False, na=False)].copy()
 
+
 def autofit_columns(ws):
-    for column_cells in ws.columns:
+    for column in ws.columns:
         max_length = 0
-        column_letter = get_column_letter(column_cells[0].column)
+        # Safe way to get the column letter without relying on column[0]
+        column_letter = get_column_letter(column[0].column)
 
-        for cell in column_cells:
-            try:
-                value_length = len(str(cell.value))
-                if value_length > max_length:
-                    max_length = value_length
-            except Exception:
-                pass
+        for cell in column:
+            if cell.value is not None:
+                # 1. Safely check for formulas if value is a string
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    continue
+                # 2. If it's a float, format it to 2 decimal places for length calculation
+                if isinstance(cell.value, float):
+                    cell_str = f"{cell.value:,.2f}"
+                else:
+                    cell_str = str(cell.value)
+                
+                # 3. Calculate length based on the formatted string
+                max_length = max(max_length, len(cell_str))
 
-        ws.column_dimensions[column_letter].width = min(max_length + 3, 60)
+        # 3. Add padding, ensuring the column doesn't shrink below a minimum width (e.g., 12)
+        ws.column_dimensions[column_letter].width = max_length + 5
 
 
-def format_workbook(workbook):
-    bold_font = Font(bold=True)
+# ============================================================
+# SUMMARY ROW FORMATTING
+# ============================================================
+def format_summary_block(ws, summary_row, summary_type="grand"):
+    """
+    Formats the summary block dynamically based on type.
+    - summary_type="regional": Only applies Bold font and Thick outer borders.
+    - summary_type="grand": Applies everything (Bold, Thick borders, AND Green Fill).
+    """
+    bold_font = Font(name="Arial", size=11, bold=True)
 
-    thin_border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    thin = Side(style="thin", color="000000")
+    thick = Side(style="thick", color="000000")
 
-    center_alignment = Alignment(horizontal="center", vertical="center")
+    # Shifted bounds due to inserting 3 columns at H
+    start_col = 4      # D
+    end_col = 18       # R
 
-    for ws in workbook.worksheets:
-        for row in ws.iter_rows():
-            is_header = ((str(row[0].value).strip() == "Date"
-                          and str(row[1].value).strip() == "R N"
-                          and str(row[2].value).strip() == "R D"))
+    start_row = summary_row
+    end_row = summary_row + 2
 
-            for cell in row:
-                # Center + Middle Align everything
-                cell.alignment = center_alignment
+    for row in range(start_row, end_row + 1):
+        for col in range(start_col, end_col + 1):
+            cell = ws.cell(row, col)
 
-                # Format dates
-                if (cell.value is not None
-                    and hasattr(cell.value, "strftime")):
-                    cell.number_format = "Short Date" #"MM/DD/YYYY"
+            # Determine outer border thickness
+            left = thick if col == start_col else thin
+            right = thick if col == end_col else thin
+            top = thick if row == start_row else thin
+            bottom = thick if row == end_row else thin
 
-                # Bold headers
-                if is_header:
-                    cell.font = bold_font
+            # Always apply font and borders
+            cell.font = bold_font
+            cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
-            # Apply borders
-            if ws.title == "Original_Data":
-                # Border on every populated cell
-                for cell in row:
-                    if cell.value not in [None, ""]:
-                        cell.border = thin_border
-
+            # Conditional: Only apply green background for Grand Summary
+            if summary_type.lower() == "grand":
+                green_fill = PatternFill(fill_type="solid", fgColor="92D050")
+                cell.fill = green_fill
             else:
-                # Keyword sheets:
-                # Border only on group headers and data rows
-                # Skip the 4 blank rows between groups
+                # Optional: Ensure regional summary has no fill (remains white/transparent)
+                cell.fill = PatternFill(fill_type=None)
 
-                if not (
-                    row[0].value in [None, ""]
-                    and row[1].value in [None, ""]
-                    and row[2].value in [None, ""]
-                ):
-                    for cell in row:
-                        cell.border = thin_border
 
-        autofit_columns(ws)
 
-    return workbook
+# ============================================================
+# REGIONAL SUMMARY BLOCK
+# ============================================================
+def add_rn_summary(ws, start_row, end_row, summary_row):
+
+    avg_row = summary_row + 2
+    # ========================================================
+    # ROW 1 OF SUMMARY BLOCK
+    # ========================================================
+
+    ws[f'D{summary_row}'] = f'=SUM(D{start_row}:D{end_row})'
+    #ws[f'D{summary_row}'].number_format = '0.00'
+
+    ws[f'E{summary_row}'] = f'=SUM(E{start_row}:E{end_row})'
+    ws[f'E{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"F{summary_row}"] = f"=J{summary_row}/E{summary_row}"
+    ws[f"F{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"F{summary_row}"] = f"=J{summary_row}/E{summary_row}"
+    ws[f"F{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"G{summary_row}"] = f"=J{avg_row}/E{summary_row}"
+    ws[f"G{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"H{summary_row}"] = f"=G{summary_row}-F{summary_row}"
+    ws[f"H{summary_row}"].number_format = '#,##0.00'
+
+    ws[f'I{summary_row}'] = f'=SUM(I{start_row}:I{end_row})'
+    ws[f'I{summary_row}'].number_format = '#,##0.00'
+
+    ws[f'J{summary_row}'] = f'=SUM(J{start_row}:J{end_row})'
+    ws[f'J{summary_row}'].number_format = '#,##0.00'
+
+    ws[f'K{summary_row}'] = f'=SUM(K{start_row}:K{end_row})'
+    #ws[f'K{summary_row}'].number_format = '#,##0.00'
+
+    ws[f'L{summary_row}'] = f'=SUM(L{start_row}:L{end_row})'
+    ws[f'L{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"M{summary_row}"] = f"=L{summary_row}/K{summary_row}"
+    ws[f"M{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"N{summary_row}"] = f"=R{summary_row}/L{summary_row}"
+    ws[f"N{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"O{summary_row}"] = f"=R{avg_row}/L{summary_row}"
+    ws[f"O{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"P{summary_row}"] = f"=O{summary_row}-N{summary_row}"
+    ws[f"P{summary_row}"].number_format = '#,##0.00'
+
+    ws[f'Q{summary_row}'] = f'=SUM(Q{start_row}:Q{end_row})'
+    ws[f'Q{summary_row}'].number_format = '#,##0.00'
+
+    ws[f'R{summary_row}'] = f'=SUM(R{start_row}:R{end_row})'
+    ws[f'R{summary_row}'].number_format = '#,##0.00'
+
+    # ========================================================
+    # ROW 3 OF SUMMARY BLOCK
+    # ========================================================
+
+    ws[f'D{avg_row}'] = 'AVG.'
+    ws[f'E{avg_row}'] = f'=E{summary_row}/D{summary_row}'
+    ws[f'E{avg_row}'].number_format = '#,##0.00'
+
+    #ws[f'G{avg_row}'] = '%'
+    ws[f'H{avg_row}'] = f'=I{summary_row}/J{summary_row}'
+    ws[f'H{avg_row}'].number_format = '0.00%'
+
+    ws[f'J{avg_row}'] = f'=J{summary_row}+I{summary_row}'
+    ws[f'J{avg_row}'].number_format = '#,##0.00'
+
+    #ws[f'K{avg_row}'] = '%'
+    ws[f'L{avg_row}'] = f'=L{summary_row}/E{summary_row}'
+    ws[f'L{avg_row}'].number_format = '0.00%'
+
+    #ws[f'O{avg_row}'] = '%'
+    ws[f'P{avg_row}'] = f'=Q{summary_row}/R{summary_row}'
+    ws[f'P{avg_row}'].number_format = '0.00%'
+
+    ws[f'R{avg_row}'] = f'=R{summary_row}+Q{summary_row}'
+    ws[f'R{avg_row}'].number_format = '#,##0.00'
+
+    # ========================================================
+    # FORMAT SUMMARY BLOCK
+    # ========================================================
+    format_summary_block(ws, summary_row, summary_type="regional")
+
+
+# ========================================================
+# GRAND SUMMARY BLOCK
+# ========================================================
+def excel_formula(formula_name, column, rows):
+    return f"={formula_name}({','.join(f'{column}{r}' for r in rows)})"
+
+def add_grand_summary(ws, rn_summary_rows, summary_row):
+
+    avg_row = summary_row + 2
+    # ========================================================
+    # ROW 1 OF GRAND SUMMARY BLOCK
+    # ========================================================
+
+    ws[f"D{summary_row}"] = excel_formula("SUM", "D", rn_summary_rows)
+    #ws[f'D{summary_row}'].number_format = '0.00'
+
+    ws[f"E{summary_row}"] = excel_formula("SUM", "E", rn_summary_rows)
+    ws[f'E{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"F{summary_row}"] = f"=J{summary_row}/E{summary_row}"
+    ws[f"F{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"F{summary_row}"] = f"=J{summary_row}/E{summary_row}"
+    ws[f"F{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"G{summary_row}"] = f"=J{avg_row}/E{summary_row}"
+    ws[f"G{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"H{summary_row}"] = f"=G{summary_row}-F{summary_row}"
+    ws[f"H{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"I{summary_row}"] = excel_formula("SUM", "I", rn_summary_rows)
+    ws[f'I{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"J{summary_row}"] = excel_formula("SUM", "J", rn_summary_rows)
+    ws[f'J{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"K{summary_row}"] = excel_formula("SUM", "K", rn_summary_rows)
+    #ws[f'K{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"L{summary_row}"] = excel_formula("SUM", "L", rn_summary_rows)
+    ws[f'L{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"M{summary_row}"] = f"=L{summary_row}/K{summary_row}"
+    ws[f"M{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"N{summary_row}"] = f"=R{summary_row}/L{summary_row}"
+    ws[f"N{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"O{summary_row}"] = f"=R{avg_row}/L{summary_row}"
+    ws[f"O{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"P{summary_row}"] = f"=O{summary_row}-N{summary_row}"
+    ws[f"P{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"Q{summary_row}"] = excel_formula("SUM", "Q", rn_summary_rows)
+    ws[f'Q{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"R{summary_row}"] = excel_formula("SUM", "R", rn_summary_rows)
+    ws[f'R{summary_row}'].number_format = '#,##0.00'
+
+    # ========================================================
+    # ROW 3 OF GRAND SUMMARY BLOCK
+    # ========================================================
+
+    ws[f'D{avg_row}'] = 'AVG.'
+    ws[f'E{avg_row}'] = f'=E{summary_row}/D{summary_row}'
+    ws[f'E{avg_row}'].number_format = '#,##0.00'
+
+    #ws[f'G{avg_row}'] = '%'
+    ws[f'H{avg_row}'] = f'=I{summary_row}/J{summary_row}'
+    ws[f'H{avg_row}'].number_format = '0.00%'
+
+    ws[f'J{avg_row}'] = f'=J{summary_row}+I{summary_row}'
+    ws[f'J{avg_row}'].number_format = '#,##0.00'
+
+    #ws[f'K{avg_row}'] = '%'
+    ws[f'L{avg_row}'] = f'=L{summary_row}/E{summary_row}'
+    ws[f'L{avg_row}'].number_format = '0.00%'
+
+    #ws[f'O{avg_row}'] = '%'
+    ws[f'P{avg_row}'] = f'=Q{summary_row}/R{summary_row}'
+    ws[f'P{avg_row}'].number_format = '0.00%'
+
+    ws[f'R{avg_row}'] = f'=R{summary_row}+Q{summary_row}'
+    ws[f'R{avg_row}'].number_format = '#,##0.00'
+
+    # ========================================================
+    # FORMAT GRAND SUMMARY BLOCK
+    # ========================================================
+
+    format_summary_block(ws, summary_row, summary_type="grand")
+
 
 def copy_cell_format(source_cell, target_cell):
 
@@ -192,6 +361,36 @@ def copy_cell_format(source_cell, target_cell):
     if source_cell.comment:
         target_cell.comment = copy(source_cell.comment)
 
+def auto_shift_all_formulas(ws, inserted_at_col_idx, amount=3):
+    """
+    Scans the entire sheet and automatically adjusts cell references inside 
+    any formula that was shifted due to column insertion.
+    """
+    # Loop through every cell that contains data
+    for row in range(1, ws.max_row + 1):
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=row, column=col)
+            
+            # Check if the cell contains a formula string
+            if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
+                # Only shift formulas that are AT or to the RIGHT of the insertion point
+                if col >= inserted_at_col_idx:
+                    # Calculate where this cell used to be before insertion
+                    old_col_letter = get_column_letter(col - amount)
+                    new_col_letter = get_column_letter(col)
+                    
+                    old_coordinate = f"{old_col_letter}{row}"
+                    new_coordinate = f"{new_col_letter}{row}"
+                    
+                    # Translate the formula references by shifting them to the right
+                    try:
+                        translated_formula = Translator(cell.value, origin=old_coordinate).translate_formula(new_coordinate)
+                        cell.value = translated_formula
+                    except Exception:
+                        # Skip if there's a highly complex/unsupported formula structure
+                        continue
+
+
 def sanitize_sheet_name(name):
     invalid_chars = r'[:\\/*?\[\]]'
     cleaned = re.sub(invalid_chars, "_", str(name))
@@ -199,29 +398,81 @@ def sanitize_sheet_name(name):
     return cleaned[:31]
 
 def generate_output(main_file, main_df, keywords):
-
     wb = load_workbook(main_file)
 
-    source_ws = None
+    original_ws = None
 
     for ws in wb.worksheets:
-        headers = [
-            str(cell.value).strip()
-            if cell.value is not None
-            else ""
-            for cell in ws[1]
-        ]
+        headers = [str(cell.value).strip().upper()
+                   if cell.value is not None
+                   else ""
+                   for cell in ws[1]]
 
-        if (
-            "Date" in headers
-            and "R N" in headers
-            and "R D" in headers
-        ):
-            source_ws = ws
+        if ("Date".upper() in headers and "R N" in headers and "R D" in headers):
+            original_ws = ws
             break
 
-    if source_ws is None:
+    if original_ws is None:
         raise ValueError("Could not find a worksheet containing Date, R N and R D columns.")
+
+    # ============================================================
+    # CREATE PROCESSED DATA SHEET
+    # ============================================================
+    source_ws = wb.copy_worksheet(original_ws)
+    source_ws.title = "Processed_Data"
+
+    # ============================================================
+    # INSERT DIFF., D.AMT., P.AMT. COLUMNS after Header R2 & P2
+    # ============================================================
+    col_num = column_index_from_string('H')
+    source_ws.insert_cols(idx=col_num, amount=3)
+
+    # Fix every formula the owner wrote instantly:
+    auto_shift_all_formulas(source_ws, inserted_at_col_idx=col_num, amount=3)
+
+    # 1. Loop and copy formatting first
+    for row in range(1, source_ws.max_row + 1):
+        copy_cell_format(source_ws[f"G{row}"], source_ws[f"H{row}"])
+        copy_cell_format(source_ws[f"G{row}"], source_ws[f"I{row}"])
+        copy_cell_format(source_ws[f"G{row}"], source_ws[f"J{row}"])
+
+    # 2. Assign text values last
+    source_ws["H1"].value = "DIFF. R"
+    source_ws["I1"].value = "D.AMT. R"
+    source_ws["J1"].value = "P.AMT. R"
+
+    # Insert 3 column before column 'P'
+    col_num = column_index_from_string('P')
+    source_ws.insert_cols(idx=col_num, amount=3)
+
+    # Fix every formula the owner wrote instantly:
+    auto_shift_all_formulas(source_ws, inserted_at_col_idx=col_num, amount=3)
+
+    # 1. Loop and copy formatting first
+    for row in range(1, source_ws.max_row + 1):
+        copy_cell_format(source_ws[f"O{row}"], source_ws[f"P{row}"])
+        copy_cell_format(source_ws[f"O{row}"], source_ws[f"Q{row}"])
+        copy_cell_format(source_ws[f"O{row}"], source_ws[f"R{row}"])
+
+    # 2. Assign text values last
+    source_ws["P1"].value = "DIFF. P"
+    source_ws["Q1"].value = "D.AMT. P"
+    source_ws["R1"].value = "P.AMT. P"
+
+    autofit_columns(source_ws)
+
+    header_mapping = {}
+
+    for col_num in range(1, source_ws.max_column + 1):
+        header_mapping[str(source_ws.cell(row=1, column=col_num).value).strip()] = col_num
+
+    r_diff = header_mapping["DIFF. R"]
+    r_d_amt = header_mapping["D.AMT. R"]
+    r_p_amt = header_mapping["P.AMT. R"]
+
+    p_diff = header_mapping["DIFF. P"]
+    p_d_amt = header_mapping["D.AMT. P"]
+    p_p_amt = header_mapping["P.AMT. P"]
     
     matched_indexes = set()
     for keyword in keywords:
@@ -248,6 +499,11 @@ def generate_output(main_file, main_df, keywords):
 
         current_row = 1
 
+        # ========================================================
+        # R N GROUPS
+        # ========================================================
+        rn_summary_rows = []
+
         grouped_rns = []
 
         matched["Group_Key"] = (matched["R N"].apply(get_group_key))
@@ -259,13 +515,10 @@ def generate_output(main_file, main_df, keywords):
 
         grouped_rns.sort(key=lambda x: x[0])
 
-        header_mapping = {}
-
         for col_num in range(1, source_ws.max_column + 1):
             source_cell = source_ws.cell(row=1, column=col_num)
             target_cell = ws.cell(row=current_row, column=col_num, value=source_cell.value)
             copy_cell_format(source_cell, target_cell)
-            header_mapping[str(source_cell.value).strip()] = col_num
 
         current_row += 1
 
@@ -273,25 +526,75 @@ def generate_output(main_file, main_df, keywords):
             if current_row > 2:
                 for col_num in range(1, source_ws.max_column + 1):
                     source_cell = source_ws.cell(row=1, column=col_num)
-                    target_cell = ws.cell( row=current_row, column=col_num, value=source_cell.value)
+                    target_cell = ws.cell(row=current_row, column=col_num)
                     copy_cell_format(source_cell, target_cell)
 
+                    # Check if the source cell contains a formula
+                    if isinstance(source_cell.value, str) and source_cell.value.startswith('='):
+                        # Translate the formula from row 1 to current_row
+                        translated_formula = Translator(source_cell.value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+                        target_cell.value = translated_formula
+                    else:
+                        # If it's regular text, just copy the value normally
+                        target_cell.value = source_cell.value
+
                 current_row += 1
+
+            group_start_row = current_row
 
             for _, row_data in group.iterrows():
                 source_row_number = row_data.name + 2
 
                 for col_num in range(1, source_ws.max_column + 1):
                     source_cell = source_ws.cell(row=source_row_number, column=col_num)
-                    target_cell = ws.cell(row=current_row, column=col_num, value=source_cell.value)
+                    target_cell = ws.cell(row=current_row, column=col_num)
                     copy_cell_format(source_cell, target_cell)
+
+                    # Check if the source cell contains a formula
+                    if isinstance(source_cell.value, str) and source_cell.value.startswith('='):
+                        # Translate the formula from row 1 to current_row
+                        translated_formula = Translator(source_cell.value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+                        target_cell.value = translated_formula
+                    else:
+                        # If it's regular text, just copy the value normally
+                        target_cell.value = source_cell.value
 
                 if source_row_number in source_ws.row_dimensions:
                     ws.row_dimensions[current_row].height = source_ws.row_dimensions[source_row_number].height
 
                 current_row += 1
 
+            group_end_row = current_row - 1
+
+            # ----------------------------------------------------
+            # RECREATE FORMULAS FOR DATA ROWS
+            # ----------------------------------------------------
+            for row_num in range(group_start_row, group_end_row + 1):
+                ws.cell(row=row_num, column=r_diff).value = f"=G{row_num}-F{row_num}"
+                ws.cell(row=row_num, column=r_d_amt).value = f"=H{row_num}*E{row_num}"
+                ws.cell(row=row_num, column=r_p_amt).value = f"=F{row_num}*E{row_num}"
+
+                ws.cell(row=row_num, column=p_diff).value = f"=O{row_num}-N{row_num}"
+                ws.cell(row=row_num, column=p_d_amt).value = f"=P{row_num}*L{row_num}"
+                ws.cell(row=row_num, column=p_p_amt).value = f"=N{row_num}*L{row_num}"
+
+            # ----------------------------------------------------
+            # SUMMARY BLOCK
+            # ----------------------------------------------------
+            summary_start_row = current_row
+
+            add_rn_summary(ws, group_start_row, group_end_row, summary_start_row)
+
+            rn_summary_rows.append(summary_start_row)
+
             current_row += 4
+
+        grand_summary_row = current_row + 1
+
+        if len(rn_summary_rows) > 1:
+            add_grand_summary(ws, rn_summary_rows, grand_summary_row)
+
+        autofit_columns(ws)
 
     remaining_df = main_df.loc[~main_df.index.isin(matched_indexes)].copy()
 
@@ -309,9 +612,17 @@ def generate_output(main_file, main_df, keywords):
         # Copy header row
         for col_num in range(1, source_ws.max_column + 1):
             source_cell = source_ws.cell(row=1, column=col_num)
-            target_cell = ws.cell(row=1, column=col_num, value=source_cell.value)
-
+            target_cell = ws.cell(row=1, column=col_num)
             copy_cell_format(source_cell, target_cell)
+
+            # Check if the source cell contains a formula
+            if isinstance(source_cell.value, str) and source_cell.value.startswith('='):
+                # Translate the formula from row 1 to current_row
+                translated_formula = Translator(source_cell.value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+                target_cell.value = translated_formula
+            else:
+                # If it's regular text, just copy the value normally
+                target_cell.value = source_cell.value            
 
         target_row = 2
 
@@ -321,13 +632,26 @@ def generate_output(main_file, main_df, keywords):
 
             for col_num in range(1,source_ws.max_column + 1):
                 source_cell = source_ws.cell(row=source_row_number, column=col_num)
-                target_cell = ws.cell( row=target_row, column=col_num, value=source_cell.value)
-
+                target_cell = ws.cell( row=target_row, column=col_num)
                 copy_cell_format(source_cell, target_cell)
+
+                # Check if the source cell contains a formula
+                if isinstance(source_cell.value, str) and source_cell.value.startswith('='):
+                    # Translate the formula from row 1 to current_row
+                    translated_formula = Translator(source_cell.value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+                    target_cell.value = translated_formula
+                else:
+                    # If it's regular text, just copy the value normally
+                    target_cell.value = source_cell.value 
 
             ws.row_dimensions[target_row].height = (source_ws.row_dimensions[source_row_number].height)
 
             target_row += 1
+
+        autofit_columns(ws)
+
+    # Deleting Processed_Data as not needed further
+    del wb["Processed_Data"]
 
     output = BytesIO()
     wb.save(output)
@@ -336,15 +660,14 @@ def generate_output(main_file, main_df, keywords):
     return output
 
 
+# ------------------------------------------------------
+# Streamlit UI
+# ------------------------------------------------------
 @st.cache_data
 def get_base64_image(image_path):
     with open(image_path, "rb") as img:
         return base64.b64encode(img.read()).decode()
     
-# ------------------------------------------------------
-# Streamlit UI
-# ------------------------------------------------------
-
 bg_image = get_base64_image("Mine.webp")
 
 st.markdown(
@@ -384,7 +707,7 @@ st.markdown("""
     background: white;
     border: 1px solid #E5E7EB;
     border-radius: 16px;
-    padding: 24px;
+    padding: 15px;
     margin-bottom: 20px;
 }
 
@@ -414,6 +737,25 @@ st.markdown("""
     font-weight: 600;
     margin-bottom: 10px;
     color: white;
+}
+
+/* ============================================================
+   CLEAN WHITE BORDER FILE UPLOADER
+   ============================================================ */
+
+/* 1. Add a solid white border to the main container outer box */
+[data-testid="stFileUploader"] {
+    border: 2px solid #FFFFFF !important;
+    border-radius: 16px !important;
+    padding: 16px !important;
+    background-color: #1F2937 !important; /* Elegant dark slate background to keep default text fully visible */
+}
+
+/* 2. Style the inner dropzone section to match smoothly */
+[data-testid="stFileUploader"] section {
+    background-color: #111827 !important; /* Deeper dark background for contrast */
+    border-radius: 12px !important;
+    border: 1px dashed rgba(255, 255, 255, 0.2) !important; /* Subtle inner white dash */
 }
 
 /* Download button */
@@ -446,7 +788,7 @@ header {
 st.markdown("""
 <div class="hero-card">
     <div class="hero-title">
-        📊 Rough Grouping Automation
+        💎 Rough Grouping Automation
     </div>
     <div class="hero-subtitle">
         Upload the source workbook and keyword file to automatically create grouped R D worksheets while preserving the original formatting.
