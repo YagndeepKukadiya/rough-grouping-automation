@@ -1,12 +1,15 @@
 import streamlit as st
 import pandas as pd
 import re
+import math
+from numbers import Number
 from io import BytesIO
 from copy import copy
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font, Border, Side, Font
+from openpyxl.styles import PatternFill, Font, Border, Side, Font, Alignment
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.formula.translate import Translator
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 import base64
 
 st.set_page_config(
@@ -25,6 +28,7 @@ def get_group_key(rn):
         return match.group(1)
 
     return str(rn)
+
 
 def validate_main_file(df):
     required_columns = ['Date', 'R N', 'R D', 'PC', 'Ct.', 'R1', 'R2', 'P. PC', 'P.Ct.', 'PS', 'P1', 'P2']
@@ -119,20 +123,17 @@ def autofit_columns(ws):
 # ============================================================
 # SUMMARY ROW FORMATTING
 # ============================================================
-def format_summary_block(ws, summary_row, summary_type="grand"):
+def format_summary_block(ws, summary_row, start_col="D", end_col="R", fill_color="92D050"):
     """
-    Formats the summary block dynamically based on type.
-    - summary_type="regional": Only applies Bold font and Thick outer borders.
-    - summary_type="grand": Applies everything (Bold, Thick borders, AND Green Fill).
+    fill_color: LIGHT_GREEN = "92D050" | AMBER = "FFC000" | LIGHT_PINK = "FFCCCC"
     """
     bold_font = Font(name="Arial", size=11, bold=True)
 
     thin = Side(style="thin", color="000000")
     thick = Side(style="thick", color="000000")
-
-    # Shifted bounds due to inserting 3 columns at H
-    start_col = 4      # D
-    end_col = 18       # R
+    
+    start_col = column_index_from_string(start_col)
+    end_col = column_index_from_string(end_col)
 
     start_row = summary_row
     end_row = summary_row + 2
@@ -151,21 +152,18 @@ def format_summary_block(ws, summary_row, summary_type="grand"):
             cell.font = bold_font
             cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
-            # Conditional: Only apply green background for Grand Summary
-            if summary_type.lower() == "grand":
-                green_fill = PatternFill(fill_type="solid", fgColor="92D050")
-                cell.fill = green_fill
+            # Conditional: Only apply background if specified
+            if fill_color is not None:
+                custom_fill = PatternFill(fill_type="solid", fgColor=fill_color)
+                cell.fill = custom_fill
             else:
-                # Optional: Ensure regional summary has no fill (remains white/transparent)
                 cell.fill = PatternFill(fill_type=None)
 
 
-
 # ============================================================
-# REGIONAL SUMMARY BLOCK
+# R N SUMMARY BLOCK
 # ============================================================
-def add_rn_summary(ws, start_row, end_row, summary_row):
-
+def add_rn_summary(ws, start_row, end_row, summary_row, fill_color=None):
     avg_row = summary_row + 2
     # ========================================================
     # ROW 1 OF SUMMARY BLOCK
@@ -224,6 +222,7 @@ def add_rn_summary(ws, start_row, end_row, summary_row):
     # ========================================================
 
     ws[f'D{avg_row}'] = 'AVG.'
+    ws[f'D{avg_row}'].alignment = Alignment(horizontal="right")
     ws[f'E{avg_row}'] = f'=E{summary_row}/D{summary_row}'
     ws[f'E{avg_row}'].number_format = '#,##0.00'
 
@@ -234,7 +233,7 @@ def add_rn_summary(ws, start_row, end_row, summary_row):
     ws[f'J{avg_row}'] = f'=J{summary_row}+I{summary_row}'
     ws[f'J{avg_row}'].number_format = '#,##0.00'
 
-    #ws[f'K{avg_row}'] = '%'
+    #ws[f'H{avg_row}'] = '%'
     ws[f'L{avg_row}'] = f'=L{summary_row}/E{summary_row}'
     ws[f'L{avg_row}'].number_format = '0.00%'
 
@@ -248,8 +247,8 @@ def add_rn_summary(ws, start_row, end_row, summary_row):
     # ========================================================
     # FORMAT SUMMARY BLOCK
     # ========================================================
-    format_summary_block(ws, summary_row, summary_type="regional")
-
+    format_summary_block(ws, summary_row, start_col="D", end_col="R", fill_color=fill_color)
+    
 
 # ========================================================
 # GRAND SUMMARY BLOCK
@@ -257,7 +256,8 @@ def add_rn_summary(ws, start_row, end_row, summary_row):
 def excel_formula(formula_name, column, rows):
     return f"={formula_name}({','.join(f'{column}{r}' for r in rows)})"
 
-def add_grand_summary(ws, rn_summary_rows, summary_row):
+
+def add_grand_summary(ws, rn_summary_rows, summary_row, fill_color="92D050"):
 
     avg_row = summary_row + 2
     # ========================================================
@@ -317,6 +317,7 @@ def add_grand_summary(ws, rn_summary_rows, summary_row):
     # ========================================================
 
     ws[f'D{avg_row}'] = 'AVG.'
+    ws[f'D{avg_row}'].alignment = Alignment(horizontal="right")
     ws[f'E{avg_row}'] = f'=E{summary_row}/D{summary_row}'
     ws[f'E{avg_row}'].number_format = '#,##0.00'
 
@@ -327,7 +328,7 @@ def add_grand_summary(ws, rn_summary_rows, summary_row):
     ws[f'J{avg_row}'] = f'=J{summary_row}+I{summary_row}'
     ws[f'J{avg_row}'].number_format = '#,##0.00'
 
-    #ws[f'K{avg_row}'] = '%'
+    #ws[f'H{avg_row}'] = '%'
     ws[f'L{avg_row}'] = f'=L{summary_row}/E{summary_row}'
     ws[f'L{avg_row}'].number_format = '0.00%'
 
@@ -341,12 +342,95 @@ def add_grand_summary(ws, rn_summary_rows, summary_row):
     # ========================================================
     # FORMAT GRAND SUMMARY BLOCK
     # ========================================================
+    format_summary_block(ws, summary_row, start_col="D", end_col="R", fill_color=fill_color)
 
-    format_summary_block(ws, summary_row, summary_type="grand")
+    
+def summary_ws_add_grand_summary(ws, rn_summary_rows, summary_row):
+    avg_row = summary_row + 2
+
+    # ========================================================
+    # ROW 1 OF GRAND SUMMARY BLOCK
+    # ========================================================
+
+    ws[f"B{summary_row}"] = excel_formula("SUM", "B", rn_summary_rows)
+    #ws[f'B{summary_row}'].number_format = '0.00'
+
+    ws[f"C{summary_row}"] = excel_formula("SUM", "C", rn_summary_rows)
+    ws[f'C{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"D{summary_row}"] = f"=H{summary_row}/C{summary_row}"
+    ws[f"D{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"E{summary_row}"] = f"=H{avg_row}/C{summary_row}"
+    ws[f"E{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"F{summary_row}"] = f"=E{summary_row}-D{summary_row}"
+    ws[f"F{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"G{summary_row}"] = excel_formula("SUM", "G", rn_summary_rows)
+    ws[f'G{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"H{summary_row}"] = excel_formula("SUM", "H", rn_summary_rows)
+    ws[f'H{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"I{summary_row}"] = excel_formula("SUM", "I", rn_summary_rows)
+    #ws[f'I{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"J{summary_row}"] = excel_formula("SUM", "J", rn_summary_rows)
+    ws[f'J{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"K{summary_row}"] = f"=J{summary_row}/I{summary_row}"
+    ws[f"K{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"L{summary_row}"] = f"=P{summary_row}/J{summary_row}"
+    ws[f"L{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"M{summary_row}"] = f"=P{avg_row}/J{summary_row}"
+    ws[f"M{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"N{summary_row}"] = f"=M{summary_row}-L{summary_row}"
+    ws[f"N{summary_row}"].number_format = '#,##0.00'
+
+    ws[f"O{summary_row}"] = excel_formula("SUM", "O", rn_summary_rows)
+    ws[f'O{summary_row}'].number_format = '#,##0.00'
+
+    ws[f"P{summary_row}"] = excel_formula("SUM", "P", rn_summary_rows)
+    ws[f'P{summary_row}'].number_format = '#,##0.00'
+
+    # ========================================================
+    # ROW 3 OF GRAND SUMMARY BLOCK
+    # ========================================================
+
+    ws[f'B{avg_row}'] = 'AVG.'
+    ws[f'B{avg_row}'].alignment = Alignment(horizontal="right")
+    ws[f'C{avg_row}'] = f'=C{summary_row}/B{summary_row}'
+    ws[f'C{avg_row}'].number_format = '#,##0.00'
+
+    #ws[f'E{avg_row}'] = '%'
+    ws[f'F{avg_row}'] = f'=G{summary_row}/H{summary_row}'
+    ws[f'F{avg_row}'].number_format = '0.00%'
+
+    ws[f'H{avg_row}'] = f'=H{summary_row}+G{summary_row}'
+    ws[f'H{avg_row}'].number_format = '#,##0.00'
+
+    #ws[f'I{avg_row}'] = '%'
+    ws[f'J{avg_row}'] = f'=J{summary_row}/C{summary_row}'
+    ws[f'J{avg_row}'].number_format = '0.00%'
+
+    #ws[f'M{avg_row}'] = '%'
+    ws[f'N{avg_row}'] = f'=O{summary_row}/P{summary_row}'
+    ws[f'N{avg_row}'].number_format = '0.00%'
+
+    ws[f'P{avg_row}'] = f'=P{summary_row}+O{summary_row}'
+    ws[f'P{avg_row}'].number_format = '#,##0.00'
+
+    # ========================================================
+    # FORMAT GRAND SUMMARY BLOCK
+    # ========================================================
+    format_summary_block(ws, summary_row, start_col="B", end_col="P", fill_color="FFC000")
 
 
 def copy_cell_format(source_cell, target_cell):
-
     if source_cell.has_style:
         target_cell.font = copy(source_cell.font)
         target_cell.fill = copy(source_cell.fill)
@@ -360,6 +444,7 @@ def copy_cell_format(source_cell, target_cell):
 
     if source_cell.comment:
         target_cell.comment = copy(source_cell.comment)
+
 
 def auto_shift_all_formulas(ws, inserted_at_col_idx, amount=3):
     """
@@ -397,6 +482,386 @@ def sanitize_sheet_name(name):
 
     return cleaned[:31]
 
+
+def copy_range_format(source_ws, target_ws,
+                      source_start_row, source_end_row,
+                      target_start_row,
+                      source_start_col, source_end_col,
+                      target_start_col=None):
+
+    if target_start_col is None:
+        target_start_col = source_start_col
+
+    for row_offset in range(source_end_row - source_start_row + 1):
+        for col_offset in range(source_end_col - source_start_col + 1):
+            source_cell = source_ws.cell(source_start_row + row_offset, source_start_col + col_offset)
+            target_cell = target_ws.cell(target_start_row + row_offset, target_start_col + col_offset)
+
+            copy_cell_format(source_cell, target_cell)
+
+
+def create_summary_sheet(wb, source_ws, r_d_col, repeat_header=False):
+    if "Summary" in wb.sheetnames:
+        del wb["Summary"]
+
+    summary_ws = wb.create_sheet("Summary", 0)
+
+    # ========================================================
+    # HEADER
+    # ========================================================
+    for source_col in range(r_d_col, source_ws.max_column + 1):
+        source_cell = source_ws.cell(1, source_col)
+        target_cell = summary_ws.cell(1, source_col)
+        target_cell.value = source_cell.value
+
+        copy_cell_format(source_cell, target_cell)
+        
+    current_row = 2
+
+    summary_grand_rows = []
+
+    # ========================================================
+    # PROCESS STATE SHEETS
+    # ========================================================
+    for ws in wb.worksheets:
+        if ws.title not in keywords:
+            continue
+
+        # ====================================================
+        # OPTIONAL HEADER REPEAT
+        # ====================================================
+        if repeat_header and current_row > 2:
+            for col in range(r_d_col, source_ws.max_column + 1):
+                source_cell = source_ws.cell(1, col)
+                target_cell = summary_ws.cell(current_row, col)
+
+                target_cell.value = source_cell.value
+
+                copy_cell_format(source_cell, target_cell)
+
+            current_row += 1
+
+        avg_row = ws.max_row
+        grand_row = avg_row - 2
+
+        state_cell = summary_ws.cell(current_row, r_d_col)
+
+        state_cell.value = ws.title
+        state_cell.alignment = Alignment(horizontal="center", vertical="center")
+        state_cell.font = Font(bold=True)
+        state_cell.fill = PatternFill(fill_type="solid", fgColor="92D050")
+
+        thick = Side(style="thick", color="000000")
+        for row in range(current_row, current_row + 3):
+            cell = summary_ws.cell(row, r_d_col)
+
+            cell.border = Border(
+                left=thick,
+                right=thick,
+                top=thick if row == current_row else None,
+                bottom=thick if row == current_row + 2 else None
+            )
+
+        # ====================================================
+        # GRAND TOTAL ROW
+        # ====================================================
+        for source_col in range(r_d_col+1, source_ws.max_column + 1):
+            source_value = ws.cell(grand_row, source_col).value
+
+            if source_value not in (None, ""):
+                summary_ws.cell(current_row, source_col).value = f"='{ws.title}'!{get_column_letter(source_col)}{grand_row}"
+
+        # ====================================================
+        # AVG ROW
+        # ====================================================
+        for source_col in range(r_d_col+1, source_ws.max_column + 1):
+            source_value = ws.cell(avg_row, source_col).value
+
+            if source_value not in (None, ""):
+                summary_ws.cell(current_row + 2, source_col).value = f"='{ws.title}'!{get_column_letter(source_col)}{avg_row}"
+
+        # ====================================================
+        # APPLY FORMAT PAINTER FROM GRAND SUMMARY
+        # ====================================================
+        copy_range_format(ws, summary_ws, grand_row, avg_row, current_row, r_d_col+1, source_ws.max_column+1, r_d_col+1)
+
+        summary_grand_rows.append(current_row)
+
+        current_row += 4
+
+    grand_summary_row = current_row + 1
+
+    summary_ws.move_range(f"C1:{get_column_letter(summary_ws.max_column)}{summary_ws.max_row}", rows=0, cols=-2)
+    
+    summary_ws_add_grand_summary(summary_ws, summary_grand_rows, grand_summary_row)
+
+    # ====================================================  
+    # MERGE STATE CELL (COLUMN A)
+    # ====================================================
+    for summary_grand_row in summary_grand_rows:
+        summary_ws.merge_cells(start_row=summary_grand_row, start_column=1, end_row=summary_grand_row + 2, end_column=1)
+
+    # ====================================================
+    # Summary Sheet GRAND Summary Rows Verifcation
+    # ====================================================
+    validation_row = summary_ws.max_row + 3
+    source_ws_gs_row = source_ws.max_row - 2 # source_ws_grand_summary_row
+
+    for i in range(3):
+        for summary_col, processed_col in zip(range(2, summary_ws.max_column + 1), range(4, source_ws.max_column + 1)):
+            summary_letter = get_column_letter(summary_col)
+            processed_letter = get_column_letter(processed_col)
+            
+            cell = summary_ws.cell(grand_summary_row+i, summary_col)
+            
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                summary_ws.cell(validation_row+i, summary_col).value = (
+                    f'=ROUNDDOWN({summary_letter}{grand_summary_row+i}, 2)'
+                    f'=ROUNDDOWN(Processed_Data!{processed_letter}{source_ws_gs_row+i}, 2)')
+            else:
+                summary_ws.cell(validation_row+i, summary_col).value = (
+                    f'={summary_letter}{grand_summary_row+i}'
+                    f'=Processed_Data!{processed_letter}{source_ws_gs_row+i}')
+            
+    light_green = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+    light_pink = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+
+    validation_range = (f"B{validation_row}:{get_column_letter(summary_ws.max_column)}{validation_row + 2}")
+
+    summary_ws.conditional_formatting.add(validation_range, FormulaRule(formula=[f'ISBLANK({validation_range.split(":")[0]})'], fill=PatternFill(fill_type=None), stopIfTrue=True))
+    summary_ws.conditional_formatting.add(validation_range, CellIsRule(operator="equal", formula=["TRUE"], fill=light_green))
+    summary_ws.conditional_formatting.add(validation_range, CellIsRule(operator="equal", formula=["FALSE"], fill=light_pink))
+
+    autofit_columns(summary_ws)
+
+# ========================================================================================================
+# Formula Evaluation Functions Start
+
+def split_cell_reference(ref):
+    m = re.fullmatch(r"\$?([A-Z]+)\$?(\d+)", ref.upper())
+    if not m:
+        raise ValueError(f"Invalid cell reference: {ref}")
+    return m.group(1), int(m.group(2))
+
+def expand_range(range_ref):
+    start, end = range_ref.split(":")
+    start_col, start_row = split_cell_reference(start)
+    end_col, end_row = split_cell_reference(end)
+
+    from openpyxl.utils import column_index_from_string, get_column_letter
+
+    cells = []
+
+    for row in range(start_row, end_row + 1):
+        for col in range(column_index_from_string(start_col), column_index_from_string(end_col) + 1):
+            cells.append(f"{get_column_letter(col)}{row}")
+
+    return cells
+
+def extract_references(formula):
+    formula = formula.lstrip("=").strip()
+    refs = []
+
+    range_pattern = (r"\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)")
+
+    for c1, r1, c2, r2 in re.findall(range_pattern, formula, re.I):
+        refs.extend(expand_range(f"{c1}{r1}:{c2}{r2}"))
+
+    formula = re.sub(range_pattern, "", formula, flags=re.I)
+    cell_pattern = (r"(?<![A-Z0-9_])\$?([A-Z]{1,3})\$?(\d+)(?![A-Z0-9_])")
+    refs.extend(f"{col.upper()}{row}" for col, row in re.findall(cell_pattern, formula, re.I))
+
+    return list(dict.fromkeys(refs))
+
+def is_number(value):
+    return (isinstance(value, Number) and not isinstance(value, bool) and not (isinstance(value, float) and math.isnan(value)))
+
+def split_arguments(text):
+    args, current, depth = [], [], 0
+
+    for char in text:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+
+        if char == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+
+    if current:
+        args.append("".join(current).strip())
+
+    return args
+
+def evaluate_formula(formula, values):
+    expression = formula.lstrip("=").strip()
+
+    def function_values(content):
+        result = []
+
+        for arg in split_arguments(content):
+            if ":" in arg:
+                refs = expand_range(arg)
+                result.extend(values.get(ref.upper()) for ref in refs)
+            else:
+                result.append(values.get(arg.upper()))
+
+        return [value for value in result if is_number(value)]
+
+    def replace_sum(match):
+        return str(sum(function_values(match.group(1))))
+
+    def replace_average(match):
+        nums = function_values(match.group(1))
+        return str(sum(nums) / len(nums)) if nums else "0"
+
+    expression = re.sub(r"\bSUM\s*\((.*?)\)", replace_sum, expression, flags=re.I)
+    expression = re.sub(r"\bAVERAGE\s*\((.*?)\)", replace_average, expression, flags=re.I)
+
+    def replace_cell(match):
+        ref = f"{match.group(1).upper()}{match.group(2)}"
+        value = values.get(ref, 0)
+        return str(value) if is_number(value) else "0"
+
+    expression = re.sub(r"(?<![A-Z0-9_])\$?([A-Z]{1,3})\$?(\d+)(?![A-Z0-9_])", replace_cell, expression, flags=re.I)
+
+    if not re.fullmatch(r"[0-9eE+\-*/().\s]+", expression):
+        raise ValueError(f"Unsupported formula: {formula}")
+
+    try:
+        return eval(expression, {"__builtins__": {}})
+    except ZeroDivisionError:
+        return 0
+
+def evaluate_cell(ws, cell_ref, cache=None, evaluating=None):
+    if cache is None:
+        cache = {}
+
+    if evaluating is None:
+        evaluating = set()
+
+    cell_ref = cell_ref.upper()
+
+    if cell_ref in cache:
+        return cache[cell_ref]
+
+    if cell_ref in evaluating:
+        raise ValueError(f"Circular reference detected: {cell_ref}")
+
+    evaluating.add(cell_ref)
+
+    try:
+        value = ws[cell_ref].value
+
+        if not (isinstance(value, str) and value.startswith("=")):
+            cache[cell_ref] = value
+            return value
+
+        refs = extract_references(value)
+        values = {ref: evaluate_cell(ws, ref, cache, evaluating) for ref in refs}
+        result = evaluate_formula(value, values)
+        cache[cell_ref] = result
+        return result
+
+    finally:
+        evaluating.remove(cell_ref)
+        
+# Formula Evaluation Functions End
+# ========================================================================================================
+
+
+def create_filtered_rn_sheet(wb, rn_group_metadata, filter_threshold, repeat_header=False, need_grand_summary=False):
+    if "R N < -10%" in wb.sheetnames:
+        del wb["R N < -10%"]
+
+    filtered_ws = wb.create_sheet("R N < -10%", 0)
+
+    current_row = 1
+    header_copied = False
+
+    filtered_rn_summary_rows = []
+    for item in rn_group_metadata:
+        r_d_ws = wb[item["sheet"]]
+        avg_row = item["avg_row"]
+
+        h_value = evaluate_cell(r_d_ws, f"H{avg_row}")
+        p_value = evaluate_cell(r_d_ws, f"P{avg_row}")
+
+        # print(
+        #     f"[Sheet={r_d_ws.title}]"
+        #     f"[R N={item['r_n']}]"
+        #     f"[Cell=H{avg_row}]"
+        #     f"[Type={type(h_value).__name__}]"
+        #     f"[Value={h_value}]"
+        #     )
+        # print(
+        #     f"[Sheet={r_d_ws.title}]"
+        #     f"[R N={item['r_n']}]"
+        #     f"[Cell=P{avg_row}]"
+        #     f"[Type={type(p_value).__name__}]"
+        #     f"[Value={p_value}]"
+        #     )
+
+        if h_value is None or p_value is None:
+            continue
+
+        if not (h_value < filter_threshold or p_value < filter_threshold):
+            continue
+
+        # ====================================================
+        # HEADER
+        # ====================================================
+        if repeat_header or not header_copied:
+            for col in range(1, r_d_ws.max_column + 1):
+                source_cell = r_d_ws.cell(1, col)
+                target_cell = filtered_ws.cell(current_row, col)
+
+                target_cell.value = source_cell.value
+
+                copy_cell_format(source_cell, target_cell)
+
+            current_row += 1
+
+            header_copied = True
+
+        # ====================================================
+        # COPY R N DATA + SUMMARY BLOCK
+        # ====================================================
+        start_row = item["group_start_row"]
+        end_row = item["summary_row"] + 2
+
+        for source_row in range(start_row, end_row + 1):
+            for col in range(1, r_d_ws.max_column + 1):
+                source_cell = r_d_ws.cell(source_row, col)
+                target_cell = filtered_ws.cell(current_row, col)
+
+                if (isinstance(source_cell.value, str) and source_cell.value.startswith("=")):
+                    target_cell.value = Translator(source_cell.value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+                else:
+                    target_cell.value = source_cell.value
+
+                copy_cell_format(source_cell, target_cell)
+
+            current_row += 1
+
+        filtered_rn_summary_rows.append(current_row-3)
+        # ====================================================
+        # BLANK ROW BETWEEN GROUPS
+        # ====================================================
+        current_row += 1
+        
+        if need_grand_summary:
+            add_grand_summary(filtered_ws, filtered_rn_summary_rows, current_row+1, fill_color="FFCCCC")
+
+    autofit_columns(filtered_ws)
+
+
+# =======================================================================================================================
+# Final Output Function
+# =======================================================================================================================
 def generate_output(main_file, main_df, keywords):
     wb = load_workbook(main_file)
 
@@ -466,6 +931,8 @@ def generate_output(main_file, main_df, keywords):
     for col_num in range(1, source_ws.max_column + 1):
         header_mapping[str(source_ws.cell(row=1, column=col_num).value).strip()] = col_num
 
+    r_d_col = header_mapping['R D']
+
     r_diff = header_mapping["DIFF. R"]
     r_d_amt = header_mapping["D.AMT. R"]
     r_p_amt = header_mapping["P.AMT. R"]
@@ -474,6 +941,19 @@ def generate_output(main_file, main_df, keywords):
     p_d_amt = header_mapping["D.AMT. P"]
     p_p_amt = header_mapping["P.AMT. P"]
     
+    # ----------------------------------------------------
+    # Add FORMULAS FOR New Columns
+    # ----------------------------------------------------
+    for row_num in range(2, source_ws.max_row + 1):
+        source_ws.cell(row=row_num, column=r_diff).value = f"=G{row_num}-F{row_num}"
+        source_ws.cell(row=row_num, column=r_d_amt).value = f"=H{row_num}*E{row_num}"
+        source_ws.cell(row=row_num, column=r_p_amt).value = f"=F{row_num}*E{row_num}"
+        
+        source_ws.cell(row=row_num, column=p_diff).value = f"=O{row_num}-N{row_num}"
+        source_ws.cell(row=row_num, column=p_d_amt).value = f"=P{row_num}*L{row_num}"
+        source_ws.cell(row=row_num, column=p_p_amt).value = f"=N{row_num}*L{row_num}"
+    
+    rn_group_metadata = []
     matched_indexes = set()
     for keyword in keywords:
         # Only match records NOT already matched by a previous keyword
@@ -567,18 +1047,6 @@ def generate_output(main_file, main_df, keywords):
             group_end_row = current_row - 1
 
             # ----------------------------------------------------
-            # RECREATE FORMULAS FOR DATA ROWS
-            # ----------------------------------------------------
-            for row_num in range(group_start_row, group_end_row + 1):
-                ws.cell(row=row_num, column=r_diff).value = f"=G{row_num}-F{row_num}"
-                ws.cell(row=row_num, column=r_d_amt).value = f"=H{row_num}*E{row_num}"
-                ws.cell(row=row_num, column=r_p_amt).value = f"=F{row_num}*E{row_num}"
-
-                ws.cell(row=row_num, column=p_diff).value = f"=O{row_num}-N{row_num}"
-                ws.cell(row=row_num, column=p_d_amt).value = f"=P{row_num}*L{row_num}"
-                ws.cell(row=row_num, column=p_p_amt).value = f"=N{row_num}*L{row_num}"
-
-            # ----------------------------------------------------
             # SUMMARY BLOCK
             # ----------------------------------------------------
             summary_start_row = current_row
@@ -586,13 +1054,21 @@ def generate_output(main_file, main_df, keywords):
             add_rn_summary(ws, group_start_row, group_end_row, summary_start_row)
 
             rn_summary_rows.append(summary_start_row)
+            
+            rn_group_metadata.append({
+                "sheet": ws.title,
+                "r_n": group_key,
+                "group_start_row": group_start_row,
+                "group_end_row": group_end_row,
+                "summary_row": summary_start_row,
+                "avg_row": summary_start_row + 2
+                })
 
             current_row += 4
 
         grand_summary_row = current_row + 1
-
-        if len(rn_summary_rows) > 1:
-            add_grand_summary(ws, rn_summary_rows, grand_summary_row)
+        
+        add_grand_summary(ws, rn_summary_rows, grand_summary_row, fill_color="92D050")
 
         autofit_columns(ws)
 
@@ -650,8 +1126,30 @@ def generate_output(main_file, main_df, keywords):
 
         autofit_columns(ws)
 
-    # Deleting Processed_Data as not needed further
-    del wb["Processed_Data"]
+
+    # ============================================================
+    # Add Grand Summary in Processed Data Sheet
+    # ============================================================
+    add_rn_summary(source_ws, 2, source_ws.max_row, source_ws.max_row+2, fill_color="FFC000")
+
+    # ============================================================
+    # Create Summary Sheet
+    # ============================================================
+    create_summary_sheet(wb, source_ws, r_d_col, repeat_header=False)
+
+    # ============================================================
+    # Create Filtered R N Sheet for Specific % < -0.10
+    # ============================================================
+    create_filtered_rn_sheet(wb, rn_group_metadata, -0.10, repeat_header=True, need_grand_summary=False)
+    
+    # ============================================================
+    # SAVE FILE
+    # ============================================================
+    for ws in wb.worksheets:
+        ws.sheet_view.tabSelected = False
+
+    wb.worksheets[0].sheet_view.tabSelected = True
+    wb.active = 0
 
     output = BytesIO()
     wb.save(output)
